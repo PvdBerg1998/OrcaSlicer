@@ -88,7 +88,11 @@ void SlicingPipelinePluginCapability::RegisterBindings(py::module_& module) {
         }, py::arg("key"),
            "serialized value of a resolved (full) print config option for this slice, or "
            "None if absent. Shorthand for ctx.print.config_value(key).")
-        .def("cancelled", &SlicingPipelineContext::cancelled);
+        .def("cancelled", &SlicingPipelineContext::cancelled)
+        .def("report_progress", [](const SlicingPipelineContext& ctx, int percent, const std::string& message) {
+            if (ctx.print)
+                ctx.print->set_status(percent, message);
+        }, py::arg("percent"), py::arg("message"));
 
     py::class_<SlicingPipelinePluginCapability, PluginCapabilityInterface,
                PySlicingPipelinePluginCapabilityTrampoline,

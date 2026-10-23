@@ -336,6 +336,9 @@ void host_bindings::register_slicing(py::module_& host)
            "sliced polygons live in this same frame, so its midpoint is the footprint center.")
         .def("trafo", [](const PrintObject& o) { return mat4_to_numpy(o.trafo()); },
              "Object-to-print 4x4 float64 affine matrix (copy). Requires numpy.")
+        .def("trafo_centered", [](const PrintObject& o) {
+            return mat4_to_numpy(o.trafo_centered());
+        }, "Object-to-slice transformation matrix.")
         .def("config_keys", [](const PrintObject& o) { return o.config().keys(); })
         .def("config_value", [](const PrintObject& o, const std::string& key) {
             return config_value_or_none(o.config(), key);
