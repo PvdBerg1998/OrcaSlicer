@@ -3260,6 +3260,13 @@ void Print::process(long long *time_cost_with_cache, bool use_cache)
     if (m_objects.empty())
         return;
 
+    // Invalidate cached slices when a slicing pipeline plugin is active.
+    if (m_pipeline_plugin_active && use_cache) {
+        for (PrintObject *obj : m_objects)
+            obj->invalidate_step(posSlice);
+        use_cache = false;
+    }
+
     // Belt purge prism: _plan_belt_purge() (psWipeTower) truncates the prism's
     // layers and drops its unclaimed fills, stashing both so a replan can undo
     // them. The object steps below regenerate per-layer content over m_layers
@@ -3402,7 +3409,15 @@ void Print::process(long long *time_cost_with_cache, bool use_cache)
             if (need_slicing_objects.count(obj) != 0) {
                 const bool was_done = obj->is_step_done(posSlice);
                 obj->slice();
-                hook_after(obj, was_done, posSlice, SlicingPipelineStepPlugin::posSlice);
+                try {
+                    hook_after(obj, was_done, posSlice, SlicingPipelineStepPlugin::posSlice);
+                    if (m_pipeline_plugin_active && !was_done && this->canceled())
+                        throw CanceledException();
+                } catch (...) {
+                    std::scoped_lock<std::mutex> lock(this->state_mutex());
+                    obj->invalidate_all_steps_without_cancel();
+                    throw;
+                }
                 // re-snapshot each layer's raw_slices AFTER the Slice hook ran, so the
                 // plugin's mutation becomes the untyped baseline. Without this, a later
                 // perimeter-only re-run (make_perimeters -> restore_untyped_slices) reverts
