@@ -609,12 +609,34 @@ void PrintObject::make_perimeters()
     }
 
     BOOST_LOG_TRIVIAL(debug) << "Generating perimeters in parallel - start";
+    const size_t total_layers = m_layers.size();
+    size_t completed_layers = 0;
+    std::mutex progress_mutex;
+    const auto walls_started = std::chrono::steady_clock::now();
+    auto last_progress = walls_started;
+    m_print->set_status(15, (boost::format(L("Generating walls: 0/%1% layers")) % total_layers).str());
     tbb::parallel_for(
-        tbb::blocked_range<size_t>(0, m_layers.size()),
-        [this](const tbb::blocked_range<size_t>& range) {
+        tbb::blocked_range<size_t>(0, total_layers),
+        [&, this](const tbb::blocked_range<size_t>& range) {
             for (size_t layer_idx = range.begin(); layer_idx < range.end(); ++ layer_idx) {
                 m_print->throw_if_canceled();
                 m_layers[layer_idx]->make_perimeters();
+
+                // Count completed layers, not their indices: workers finish out of order.
+                // Serialize status callbacks and limit UI updates to four per second.
+                std::scoped_lock lock(progress_mutex);
+                ++completed_layers;
+                const auto now = std::chrono::steady_clock::now();
+                if (completed_layers == total_layers || now - last_progress >= std::chrono::milliseconds(250)) {
+                    last_progress = now;
+                    const double elapsed = std::chrono::duration<double>(now - walls_started).count();
+                    const auto remaining = static_cast<long long>(std::ceil(elapsed * (total_layers - completed_layers) / completed_layers));
+                    const int percent = static_cast<int>(100.0 * completed_layers / total_layers);
+                    // Keep the existing overall milestone; the percentage in the text is for this object's walls.
+                    // TRN Slicing status: completed layers, total layers, wall-stage percentage, estimated seconds remaining.
+                    m_print->set_status(15, (boost::format(L("Generating walls: %1%/%2% layers (%3%%%) - ETA %4% s"))
+                        % completed_layers % total_layers % percent % remaining).str());
+                }
             }
         }
     );
