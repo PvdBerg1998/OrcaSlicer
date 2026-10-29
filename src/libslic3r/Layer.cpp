@@ -22,6 +22,7 @@
 #include <utility>
 #include <cassert>
 #include <map>
+#include <array>
 #include "Config.hpp"
 #include "MultiMaterialSegmentation.hpp"
 #include "ObjectID.hpp"
@@ -321,9 +322,6 @@ void Layer::make_perimeters(bool collect_unprinted_islands)
 
 bool Layer::reassign_unprinted_islands()
 {
-    // No tolerance/offset here: a material island must occupy an entire hole of
-    // exactly one other region. An air gap, nested island or external boundary
-    // must not become material merely because the wall generator produced no paths.
     const auto same_area = [](const ExPolygon &a, const ExPolygon &b) {
         return get_extents(a) == get_extents(b) &&
             diff_ex(ExPolygons{a}, ExPolygons{b}).empty() &&
@@ -333,68 +331,171 @@ bool Layer::reassign_unprinted_islands()
         if (!region.slices_before_island_recovery)
             region.slices_before_island_recovery = to_expolygons(region.slices.surfaces);
     };
+
+    using BoxKey = std::array<coord_t, 4>;
+    const auto box_key = [](const BoundingBox &b) -> BoxKey {
+        return {b.min.x(), b.min.y(), b.max.x(), b.max.y()};
+    };
+
+    struct RegionIndex {
+        std::map<BoxKey, std::vector<size_t>> surfaces;
+        std::map<BoxKey, std::vector<std::pair<size_t, size_t>>> holes;
+        std::vector<BoundingBox> boxes;
+    };
+
+    std::map<LayerRegion *, RegionIndex> indexes;
+    std::map<LayerRegion *, Polygons> coverage_cache;
+    std::map<LayerRegion *, bool> raw_dirty;
+
+    // Build bounding-box indexes, rebuilding modified regions after transfers.
+    const auto rebuild_index = [&](LayerRegion *region) {
+        auto &idx = indexes[region];
+        idx = RegionIndex{};
+
+        const auto &surfaces = region->slices.surfaces;
+        idx.boxes.reserve(surfaces.size());
+
+        for (size_t i = 0; i < surfaces.size(); ++i) {
+            const auto &expolygon = surfaces[i].expolygon;
+            idx.boxes.push_back(get_extents(expolygon));
+            idx.surfaces[box_key(idx.boxes.back())].push_back(i);
+
+            for (size_t h = 0; h < expolygon.holes.size(); ++h)
+                idx.holes[box_key(get_extents(expolygon.holes[h]))].emplace_back(i, h);
+        }
+    };
+
+    for (LayerRegion *region : m_regions)
+        rebuild_index(region);
+
     bool changed = false;
+
     for (LayerRegion *source : m_regions) {
         if (source->region().config().wall_loops.value == 0 ||
             source->region().config().sparse_infill_density.value != 100.)
             continue;
+
         for (const ExPolygon &island : source->unprinted_islands) {
+            if (this->object()->print()->canceled())
+                throw CanceledException();
+
             if (!island.holes.empty())
                 continue;
-            auto &surfaces = source->slices.surfaces;
-            auto original = std::find_if(surfaces.begin(), surfaces.end(),
-                [&](const Surface &s) { return same_area(s.expolygon, island); });
-            // process_no_bridge may split a surface. Only transfer a whole
-            // original island, never a discarded piece of a printable feature.
-            if (original == surfaces.end())
-                continue;
+
+            const auto bbox = get_extents(island);
+            const auto key = box_key(bbox);
 
             LayerRegion *recipient = nullptr;
-            Surface *surrounding = nullptr;
-            size_t hole_idx = 0;
+            size_t surface_idx = 0, hole_idx = 0;
             bool ambiguous = false;
+
+            // Only inspect holes with exactly the same bounding box.
             for (LayerRegion *other : m_regions) {
                 if (other == source)
                     continue;
-                if (!intersection_ex(ExPolygons{island}, to_expolygons(other->slices.surfaces)).empty()) {
-                    ambiguous = true;
-                    break;
-                }
-                for (Surface &surface : other->slices.surfaces)
-                    for (size_t h = 0; h < surface.expolygon.holes.size(); ++h) {
-                        if (get_extents(surface.expolygon.holes[h]) != get_extents(island))
-                            continue;
-                        Polygon hole = surface.expolygon.holes[h];
-                        hole.reverse();
-                        if (same_area(ExPolygon(hole), island)) {
-                            if (recipient != nullptr)
-                                ambiguous = true;
-                            recipient = other;
-                            surrounding = &surface;
-                            hole_idx = h;
-                        }
+
+                const auto &idx = indexes[other];
+                auto candidates = idx.holes.find(key);
+                if (candidates == idx.holes.end())
+                    continue;
+
+                for (const auto &[si, hi] : candidates->second) {
+                    Polygon hole = other->slices.surfaces[si].expolygon.holes[hi];
+                    hole.reverse();
+
+                    if (!same_area(ExPolygon(std::move(hole)), island))
+                        continue;
+
+                    if (recipient != nullptr) {
+                        ambiguous = true;
+                        break;
                     }
+
+                    recipient = other;
+                    surface_idx = si;
+                    hole_idx = hi;
+                }
+                if (ambiguous)
+                    break;
             }
+
             if (ambiguous || recipient == nullptr ||
                 recipient->region().config().sparse_infill_density.value != 100.)
                 continue;
-            // The surrounding component must itself have printable output.
-            Polygons coverage = recipient->perimeters.polygons_covered_by_width();
-            recipient->thin_fills.polygons_covered_by_width(coverage, 0.f);
-            polygons_append(coverage, to_polygons(recipient->fill_surfaces.surfaces));
-            if (intersection_ex(ExPolygons{surrounding->expolygon}, coverage).empty())
+
+            // Find the whole source surface using the same bounding-box index.
+            auto &surfaces = source->slices.surfaces;
+            const auto &source_idx = indexes[source];
+            auto candidates = source_idx.surfaces.find(key);
+            if (candidates == source_idx.surfaces.end())
+                continue;
+
+            size_t original_idx = surfaces.size();
+            for (size_t si : candidates->second) {
+                if (same_area(surfaces[si].expolygon, island)) {
+                    original_idx = si;
+                    break;
+                }
+            }
+            if (original_idx == surfaces.size())
+                continue;
+
+            // Reject overlapping material, checking only spatially relevant surfaces.
+            for (LayerRegion *other : m_regions) {
+                if (other == source)
+                    continue;
+
+                ExPolygons nearby;
+                const auto &idx = indexes[other];
+                const auto &other_surfaces = other->slices.surfaces;
+
+                for (size_t si = 0; si < other_surfaces.size(); ++si)
+                    if (bbox.overlap(idx.boxes[si]))
+                        nearby.push_back(other_surfaces[si].expolygon);
+
+                if (!nearby.empty() &&
+                    !intersection_ex(ExPolygons{island}, nearby).empty()) {
+                    ambiguous = true;
+                    break;
+                }
+            }
+            if (ambiguous)
+                continue;
+
+            // The surrounding component must have printable output.
+            auto [it, inserted] = coverage_cache.try_emplace(recipient);
+            if (inserted) {
+                it->second = recipient->perimeters.polygons_covered_by_width();
+                recipient->thin_fills.polygons_covered_by_width(it->second, 0.f);
+                polygons_append(it->second, to_polygons(recipient->fill_surfaces.surfaces));
+            }
+
+            auto &surrounding = recipient->slices.surfaces[surface_idx];
+            if (intersection_ex(ExPolygons{surrounding.expolygon}, it->second).empty())
                 continue;
 
             preserve_source(*source);
             preserve_source(*recipient);
-            surrounding->expolygon.holes.erase(surrounding->expolygon.holes.begin() + hole_idx);
-            surfaces.erase(original);
-            source->raw_slices = to_expolygons(source->slices.surfaces);
-            recipient->raw_slices = to_expolygons(recipient->slices.surfaces);
+
+            surrounding.expolygon.holes.erase(
+                surrounding.expolygon.holes.begin() + hole_idx);
+            surfaces.erase(surfaces.begin() + original_idx);
+
+            raw_dirty[source] = true;
+            raw_dirty[recipient] = true;
             changed = true;
+
+            // Surface/hole indices may have shifted after erasing.
+            rebuild_index(source);
+            rebuild_index(recipient);
         }
     }
-    // The union of materials is unchanged, so lslices and its bbox cache remain valid.
+
+    // Rebuild raw slices once per modified region, not once per island.
+    for (const auto &[region, dirty] : raw_dirty)
+        if (dirty)
+            region->raw_slices = to_expolygons(region->slices.surfaces);
+
     return changed;
 }
 
