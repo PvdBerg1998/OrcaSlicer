@@ -1271,6 +1271,8 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, in
         "min_bead_width", "wall_distribution_count", "initial_layer_min_bead_width", "wall_maximum_resolution", "wall_maximum_deviation"})
         toggle_line(el, have_arachne, -1, _L("Select the Arachne wall generator to use this setting."));
     toggle_field("detect_thin_wall", !have_arachne, -1, _L("Thin wall detection is unavailable with the Arachne wall generator."));
+    toggle_field("fill_unprintable_islands", !has_spiral_vase, -1,
+                 _L("Disable spiral vase mode to fill unprintable material islands."));
 
     // Orca
     auto is_role_based_wipe_speed = config->opt_bool("role_based_wipe_speed");

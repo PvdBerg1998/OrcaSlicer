@@ -105,6 +105,8 @@ public:
     SurfaceCollection           *fill_surfaces;
     //BBS
     ExPolygons                  *fill_no_overlap;
+    // Optional report of whole islands producing neither walls nor an infill region.
+    ExPolygons                  *unprinted_islands = nullptr;
 
     //BBS
     Flow                        smaller_ext_perimeter_flow;

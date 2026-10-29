@@ -1541,6 +1541,9 @@ void PerimeterGenerator::process_classic()
     const bool only_one_wall_first_layer = this->config->only_one_wall_first_layer && has_bottom_shell_layers(*this->config);
     for (size_t order_idx = 0; order_idx < surface_order.size(); order_idx++) {
         const Surface &surface = all_surfaces[surface_order[order_idx]];
+        const size_t loops_before = this->loops->entities.size();
+        const size_t gaps_before = this->gap_fill->entities.size();
+        const size_t fills_before = this->fill_surfaces->surfaces.size();
         // detect how many perimeters must be generated for this island
         int loop_number = this->config->wall_loops + surface.extra_perimeters - 1;  // 0-indexed loops
         int sparse_infill_density = this->config->sparse_infill_density.value;
@@ -2098,6 +2101,9 @@ void PerimeterGenerator::process_classic()
             this->fill_no_overlap->insert(this->fill_no_overlap->end(), polyWithoutOverlap.begin(), polyWithoutOverlap.end());
         }
 
+        if (unprinted_islands != nullptr && this->loops->entities.size() == loops_before &&
+            this->gap_fill->entities.size() == gaps_before && this->fill_surfaces->surfaces.size() == fills_before)
+            unprinted_islands->push_back(surface.expolygon);
     } // for each island
 }
 
@@ -3063,7 +3069,10 @@ void PerimeterGenerator::process_arachne()
             }
       }
     });
-    for (ArachneSurfaceResult &result : results) {
+    for (size_t surface_idx = 0; surface_idx < results.size(); ++surface_idx) {
+        ArachneSurfaceResult &result = results[surface_idx];
+        if (unprinted_islands != nullptr && !result.has_loops && result.infill.empty())
+            unprinted_islands->push_back(all_surfaces[surface_idx].expolygon);
         if (result.has_loops)
             // Moved, not copied: append(const ExtrusionEntity &) clones the whole wall tree of the island.
             this->loops->append(std::move(result.loops));

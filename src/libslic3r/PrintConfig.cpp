@@ -5076,6 +5076,15 @@ void PrintConfigDef::init_fff_params()
     def->set_default_value(new ConfigOptionStrings());
     def->cli = ConfigOptionDef::nocli;
 
+    def = this->add("fill_unprintable_islands", coBool);
+    def->label = L("Fill unprintable material islands");
+    def->tooltip = L("Replace fully enclosed material islands that produce no walls, thin-wall paths, gap fill or infill area with the surrounding material. "
+                     "Both regions must use 100% infill. Printable islands and air cavities are preserved. "
+                     "Available with Classic and Arachne wall generators. Spiral vase mode must be disabled.");
+    def->category = L("Multimaterial");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(false));
+
     def = this->add("interface_shells", coBool);
     def->label = L("Interface shells");
     def->tooltip = L("Force the generation of solid shells between adjacent materials/volumes. "
