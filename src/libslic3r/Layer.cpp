@@ -93,8 +93,10 @@ static inline bool layer_needs_raw_backup(const Layer *layer)
 void Layer::backup_untyped_slices()
 {
     if (layer_needs_raw_backup(this)) {
-        for (LayerRegion *layerm : m_regions)
+        for (LayerRegion *layerm : m_regions) {
             layerm->raw_slices = to_expolygons(layerm->slices.surfaces);
+            layerm->slices_before_island_recovery.reset();
+        }
     } else {
         assert(m_regions.size() == 1);
         m_regions.front()->raw_slices.clear();
@@ -202,9 +204,11 @@ bool Layer::is_perimeter_compatible(const Print& print, const PrintRegion& a, co
 // Here the perimeters are created cummulatively for all layer regions sharing the same parameters influencing the perimeters.
 // The perimeter paths and the thin fills (ExtrusionEntityCollection) are assigned to the first compatible layer region.
 // The resulting fill surface is split back among the originating regions.
-void Layer::make_perimeters()
+void Layer::make_perimeters(bool collect_unprinted_islands)
 {
     BOOST_LOG_TRIVIAL(trace) << "Generating perimeters for layer " << this->id();
+    for (LayerRegion *region : m_regions)
+        region->unprinted_islands.clear();
 
     const auto clear_generated_extrusions = [](LayerRegion *layer_region) {
         layer_region->perimeters.clear();
@@ -251,7 +255,8 @@ void Layer::make_perimeters()
 
 	        if (layerms.size() == 1) {  // optimization
 	            (*layerm)->fill_surfaces.surfaces.clear();
-                (*layerm)->make_perimeters((*layerm)->slices, {*layerm}, &(*layerm)->fill_surfaces, &(*layerm)->fill_no_overlap_expolygons);
+                (*layerm)->make_perimeters((*layerm)->slices, {*layerm}, &(*layerm)->fill_surfaces, &(*layerm)->fill_no_overlap_expolygons,
+                    collect_unprinted_islands ? &(*layerm)->unprinted_islands : nullptr);
 	            (*layerm)->fill_expolygons = to_expolygons((*layerm)->fill_surfaces.surfaces);
 	        } else {
 	            // Orca: Unlike the compatible regions above, the initiating region has not
@@ -312,6 +317,95 @@ void Layer::make_perimeters()
 	        }
 	    }
     BOOST_LOG_TRIVIAL(trace) << "Generating perimeters for layer " << this->id() << " - Done";
+}
+
+bool Layer::reassign_unprinted_islands()
+{
+    // No tolerance/offset here: a material island must occupy an entire hole of
+    // exactly one other region. An air gap, nested island or external boundary
+    // must not become material merely because the wall generator produced no paths.
+    const auto same_area = [](const ExPolygon &a, const ExPolygon &b) {
+        return get_extents(a) == get_extents(b) &&
+            diff_ex(ExPolygons{a}, ExPolygons{b}).empty() &&
+            diff_ex(ExPolygons{b}, ExPolygons{a}).empty();
+    };
+    const auto preserve_source = [](LayerRegion &region) {
+        if (!region.slices_before_island_recovery)
+            region.slices_before_island_recovery = to_expolygons(region.slices.surfaces);
+    };
+    bool changed = false;
+    for (LayerRegion *source : m_regions) {
+        if (source->region().config().wall_loops.value == 0 ||
+            source->region().config().sparse_infill_density.value != 100.)
+            continue;
+        for (const ExPolygon &island : source->unprinted_islands) {
+            if (!island.holes.empty())
+                continue;
+            auto &surfaces = source->slices.surfaces;
+            auto original = std::find_if(surfaces.begin(), surfaces.end(),
+                [&](const Surface &s) { return same_area(s.expolygon, island); });
+            // process_no_bridge may split a surface. Only transfer a whole
+            // original island, never a discarded piece of a printable feature.
+            if (original == surfaces.end())
+                continue;
+
+            LayerRegion *recipient = nullptr;
+            Surface *surrounding = nullptr;
+            size_t hole_idx = 0;
+            bool ambiguous = false;
+            for (LayerRegion *other : m_regions) {
+                if (other == source)
+                    continue;
+                if (!intersection_ex(ExPolygons{island}, to_expolygons(other->slices.surfaces)).empty()) {
+                    ambiguous = true;
+                    break;
+                }
+                for (Surface &surface : other->slices.surfaces)
+                    for (size_t h = 0; h < surface.expolygon.holes.size(); ++h) {
+                        if (get_extents(surface.expolygon.holes[h]) != get_extents(island))
+                            continue;
+                        Polygon hole = surface.expolygon.holes[h];
+                        hole.reverse();
+                        if (same_area(ExPolygon(hole), island)) {
+                            if (recipient != nullptr)
+                                ambiguous = true;
+                            recipient = other;
+                            surrounding = &surface;
+                            hole_idx = h;
+                        }
+                    }
+            }
+            if (ambiguous || recipient == nullptr ||
+                recipient->region().config().sparse_infill_density.value != 100.)
+                continue;
+            // The surrounding component must itself have printable output.
+            Polygons coverage = recipient->perimeters.polygons_covered_by_width();
+            recipient->thin_fills.polygons_covered_by_width(coverage, 0.f);
+            polygons_append(coverage, to_polygons(recipient->fill_surfaces.surfaces));
+            if (intersection_ex(ExPolygons{surrounding->expolygon}, coverage).empty())
+                continue;
+
+            preserve_source(*source);
+            preserve_source(*recipient);
+            surrounding->expolygon.holes.erase(surrounding->expolygon.holes.begin() + hole_idx);
+            surfaces.erase(original);
+            source->raw_slices = to_expolygons(source->slices.surfaces);
+            recipient->raw_slices = to_expolygons(recipient->slices.surfaces);
+            changed = true;
+        }
+    }
+    // The union of materials is unchanged, so lslices and its bbox cache remain valid.
+    return changed;
+}
+
+void Layer::restore_island_ownership()
+{
+    for (LayerRegion *region : m_regions)
+        if (region->slices_before_island_recovery) {
+            region->raw_slices = std::move(*region->slices_before_island_recovery);
+            region->slices_before_island_recovery.reset();
+            region->slices.set(region->raw_slices, stInternal);
+        }
 }
 
 void Layer::export_region_slices_to_svg(const char *path) const

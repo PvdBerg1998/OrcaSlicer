@@ -1317,6 +1317,7 @@ static std::vector<std::string> s_Preset_print_options{
     "preheat_time",
     "preheat_steps",
     "interface_shells",
+    "fill_unprintable_islands",
     "line_width",
     "initial_layer_line_width",
     "inner_wall_line_width",

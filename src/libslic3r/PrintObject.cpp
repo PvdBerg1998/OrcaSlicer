@@ -537,6 +537,11 @@ void PrintObject::make_perimeters()
         m_typed_slices = false;
     }
 
+    // A previous recovery must not erase source features when print settings change.
+    for (Layer *layer : m_layers)
+        layer->restore_island_ownership();
+    const bool recover_islands = m_config.fill_unprintable_islands.value && !m_print->config().spiral_mode;
+
     // compare each layer to the one below, and mark those slices needing
     // one additional inner perimeter, like the top of domed objects-
 
@@ -620,7 +625,7 @@ void PrintObject::make_perimeters()
         [&, this](const tbb::blocked_range<size_t>& range) {
             for (size_t layer_idx = range.begin(); layer_idx < range.end(); ++ layer_idx) {
                 m_print->throw_if_canceled();
-                m_layers[layer_idx]->make_perimeters();
+                m_layers[layer_idx]->make_perimeters(recover_islands);
 
                 // Count completed layers, not their indices: workers finish out of order.
                 // Serialize status callbacks and limit UI updates to four per second.
@@ -642,6 +647,24 @@ void PrintObject::make_perimeters()
     );
     m_print->throw_if_canceled();
     BOOST_LOG_TRIVIAL(debug) << "Generating perimeters in parallel - end";
+
+    if (recover_islands) {
+        bool changed = false;
+        // Perimeters read neighbouring layers. Finish every reader before changing
+        // material ownership, and finish every change before generating paths again.
+        for (Layer *layer : m_layers) {
+            m_print->throw_if_canceled();
+            changed = layer->reassign_unprinted_islands() || changed;
+        }
+        if (changed)
+            tbb::parallel_for(tbb::blocked_range<size_t>(0, m_layers.size()),
+                [this](const tbb::blocked_range<size_t> &range) {
+                    for (size_t i = range.begin(); i < range.end(); ++i) {
+                        m_print->throw_if_canceled();
+                        m_layers[i]->make_perimeters();
+                    }
+                });
+    }
 
     this->set_done(posPerimeters);
 }
@@ -1810,7 +1833,8 @@ bool PrintObject::invalidate_state_by_config_options(
             steps.emplace_back(posInfill);
             steps.emplace_back(posSupportMaterial);
         } else if (
-                opt_key == "wall_generator"
+                opt_key == "fill_unprintable_islands"
+            || opt_key == "wall_generator"
             || opt_key == "wall_transition_length"
             || opt_key == "wall_transition_filter_deviation"
             || opt_key == "wall_transition_angle"
