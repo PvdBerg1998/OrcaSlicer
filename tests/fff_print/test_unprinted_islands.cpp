@@ -356,3 +356,99 @@ TEST_CASE("Classic preserves printable thin material islands", "[UnprintedIsland
     CHECK_FALSE(f.layer.reassign_unprinted_islands());
     CHECK(same_area(to_expolygons(f.b->slices.surfaces), island));
 }
+
+TEST_CASE("Batched recovery preserves printable islands and restores the complete original partition", "[UnprintedIslands]")
+{
+    IslandFixture f(0.04);
+    ExPolygons tiny;
+    for (int i = 0; i < 64; ++i)
+        tiny.emplace_back(square(1. + (i % 8) * 0.2, 1. + (i / 8) * 0.2, 0.04));
+    const ExPolygons printable{ExPolygon(square(7., 7., 1.))};
+    f.b->slices.set(tiny, stInternal);
+    f.b->slices.append(printable, stInternal);
+    f.a->slices.set(diff_ex(f.solid, to_expolygons(f.b->slices.surfaces)), stInternal);
+    const ExPolygons before_a = to_expolygons(f.a->slices.surfaces);
+    const ExPolygons before_b = to_expolygons(f.b->slices.surfaces);
+    f.generate();
+    REQUIRE(f.b->unprinted_islands.size() == tiny.size());
+    REQUIRE(f.layer.reassign_unprinted_islands());
+    CHECK(same_area(f.a->raw_slices, diff_ex(f.solid, printable)));
+    CHECK(same_area(f.b->raw_slices, printable));
+    f.layer.restore_island_ownership();
+    CHECK(same_area(f.a->raw_slices, before_a));
+    CHECK(same_area(f.b->raw_slices, before_b));
+}
+
+TEST_CASE("A matching recipient hole does not hide overlapping material elsewhere", "[UnprintedIslands]")
+{
+    IslandFixture f(0.04);
+    const bool same_recipient = GENERATE(false, true);
+    PrintRegion material_c;
+    material_c.set_config(f.material_a.config());
+    LayerRegion *overlapping = same_recipient ? f.a : f.layer.add_region(&material_c);
+    overlapping->slices.append(ExPolygons{ExPolygon(square(5., 5., 0.02))}, stInternal);
+    f.b->unprinted_islands = f.b->raw_slices;
+    f.a->fill_surfaces = f.a->slices;
+    const ExPolygons before_a = to_expolygons(f.a->slices.surfaces);
+    REQUIRE_FALSE(f.layer.reassign_unprinted_islands());
+    CHECK(same_area(to_expolygons(f.a->slices.surfaces), before_a));
+    CHECK(same_area(to_expolygons(f.b->slices.surfaces), f.b->raw_slices));
+}
+
+TEST_CASE("Matching bounding boxes alone never fill air beside a material island", "[UnprintedIslands]")
+{
+    IslandFixture f(0.04);
+    const ExPolygons triangle{ExPolygon(Polygon({Point::new_scale(5., 5.),
+        Point::new_scale(5.04, 5.), Point::new_scale(5., 5.04)}))};
+    f.b->slices.set(triangle, stInternal);
+    f.b->unprinted_islands = triangle;
+    f.a->fill_surfaces = f.a->slices;
+    REQUIRE_FALSE(f.layer.reassign_unprinted_islands());
+    CHECK(same_area(to_expolygons(f.b->slices.surfaces), triangle));
+    CHECK(same_area(to_expolygons(f.a->slices.surfaces), f.a->raw_slices));
+}
+
+TEST_CASE("Each material can receive and lose islands in the same recovery batch", "[UnprintedIslands]")
+{
+    IslandFixture f(0.04);
+    const ExPolygons left{ExPolygon(square(0., 0., 4.))}, right{ExPolygon(square(6., 0., 4.))};
+    const ExPolygons in_left{ExPolygon(square(1., 1., 0.04))}, in_right{ExPolygon(square(7., 1., 0.04))};
+    f.a->slices.set(diff_ex(left, in_left), stInternal);
+    f.a->slices.append(in_right, stInternal);
+    f.b->slices.set(diff_ex(right, in_right), stInternal);
+    f.b->slices.append(in_left, stInternal);
+    const ExPolygons before_a = to_expolygons(f.a->slices.surfaces);
+    const ExPolygons before_b = to_expolygons(f.b->slices.surfaces);
+    f.a->unprinted_islands = in_right;
+    f.b->unprinted_islands = in_left;
+    f.a->fill_surfaces.set(diff_ex(left, in_left), stInternal);
+    f.b->fill_surfaces.set(diff_ex(right, in_right), stInternal);
+    REQUIRE(f.layer.reassign_unprinted_islands());
+    CHECK(same_area(f.a->raw_slices, left));
+    CHECK(same_area(f.b->raw_slices, right));
+    f.layer.restore_island_ownership();
+    CHECK(same_area(f.a->raw_slices, before_a));
+    CHECK(same_area(f.b->raw_slices, before_b));
+}
+
+TEST_CASE("Output in a disconnected component cannot justify filling an unprinted enclosure", "[UnprintedIslands]")
+{
+    IslandFixture f(0.04);
+    const ExPolygons elsewhere{ExPolygon(square(12., 12., 1.))};
+    f.a->slices.append(elsewhere, stInternal);
+    f.a->fill_surfaces.set(elsewhere, stInternal);
+    f.b->unprinted_islands = f.b->raw_slices;
+    REQUIRE_FALSE(f.layer.reassign_unprinted_islands());
+    CHECK(same_area(to_expolygons(f.b->slices.surfaces), f.b->raw_slices));
+}
+
+TEST_CASE("Duplicate discarded reports transfer an island only once", "[UnprintedIslands]")
+{
+    IslandFixture f(0.04);
+    f.b->unprinted_islands = f.b->raw_slices;
+    f.b->unprinted_islands.push_back(f.b->raw_slices.front());
+    f.a->fill_surfaces = f.a->slices;
+    REQUIRE(f.layer.reassign_unprinted_islands());
+    CHECK(f.b->slices.empty());
+    CHECK(same_area(f.a->raw_slices, f.solid));
+}
