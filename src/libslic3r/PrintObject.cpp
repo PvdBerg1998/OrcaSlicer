@@ -72,6 +72,8 @@
 #include <tuple>
 #include <unordered_set>
 #include <utility>
+#include <future>
+#include <atomic>
 
 #include <boost/log/trivial.hpp>
 #include <Eigen/Core>
@@ -615,55 +617,141 @@ void PrintObject::make_perimeters()
 
     BOOST_LOG_TRIVIAL(debug) << "Generating perimeters in parallel - start";
     const size_t total_layers = m_layers.size();
-    size_t completed_layers = 0;
-    std::mutex progress_mutex;
-    const auto walls_started = std::chrono::steady_clock::now();
-    auto last_progress = walls_started;
-    m_print->set_status(15, (boost::format(L("Generating walls: 0/%1% layers")) % total_layers).str());
-    tbb::parallel_for(
-        tbb::blocked_range<size_t>(0, total_layers),
-        [&, this](const tbb::blocked_range<size_t>& range) {
-            for (size_t layer_idx = range.begin(); layer_idx < range.end(); ++ layer_idx) {
-                m_print->throw_if_canceled();
-                m_layers[layer_idx]->make_perimeters(recover_islands);
+    std::atomic<size_t> completed_layers{0};
+    std::vector<std::atomic<long long>> active_since(total_layers);
+    for (auto &value : active_since)
+        value.store(-1);
 
-                // Count completed layers, not their indices: workers finish out of order.
-                // Serialize status callbacks and limit UI updates to four per second.
-                std::scoped_lock lock(progress_mutex);
-                ++completed_layers;
-                const auto now = std::chrono::steady_clock::now();
-                if (completed_layers == total_layers || now - last_progress >= std::chrono::milliseconds(250)) {
-                    last_progress = now;
-                    const double elapsed = std::chrono::duration<double>(now - walls_started).count();
-                    const auto remaining = static_cast<long long>(std::ceil(elapsed * (total_layers - completed_layers) / completed_layers));
-                    const int percent = static_cast<int>(100.0 * completed_layers / total_layers);
-                    // Keep the existing overall milestone; the percentage in the text is for this object's walls.
-                    // TRN Slicing status: completed layers, total layers, wall-stage percentage, estimated seconds remaining.
-                    m_print->set_status(15, (boost::format(L("Generating walls: %1%/%2% layers (%3%%%) - ETA %4% s"))
-                        % completed_layers % total_layers % percent % remaining).str());
+    const auto walls_started = std::chrono::steady_clock::now();
+    m_print->set_status(15, (boost::format(L("Generating walls: 0/%1% layers")) % total_layers).str());
+
+    auto wall_job = std::async(std::launch::async, [&, this] {
+        tbb::parallel_for(tbb::blocked_range<size_t>(0, total_layers),
+            [&, this](const tbb::blocked_range<size_t> &range) {
+                for (size_t i = range.begin(); i < range.end(); ++i) {
+                    m_print->throw_if_canceled();
+                    const auto now = std::chrono::steady_clock::now();
+                    active_since[i].store(std::chrono::duration_cast<std::chrono::milliseconds>(now - walls_started).count());
+                    m_layers[i]->make_perimeters(recover_islands);
+                    active_since[i].store(-1);
+                    ++completed_layers;
+                }
+            });
+    });
+
+    while (wall_job.wait_for(std::chrono::milliseconds(500)) != std::future_status::ready) {
+        const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::steady_clock::now() - walls_started).count();
+
+        size_t active = 0, slowest = total_layers;
+        long long earliest = std::numeric_limits<long long>::max();
+        for (size_t i = 0; i < total_layers; ++i) {
+            const auto start = active_since[i].load();
+            if (start >= 0) {
+                ++active;
+                if (start < earliest) {
+                    earliest = start;
+                    slowest = i;
                 }
             }
         }
-    );
+
+        std::string message = (boost::format(L("Generating walls: %1%/%2% layers, %3% s elapsed, %4% active"))
+            % completed_layers.load() % total_layers % elapsed % active).str();
+
+        if (slowest != total_layers)
+            message += (boost::format(L("; longest-running layer %1% (%2% s)"))
+                % (slowest + 1) % (elapsed - earliest / 1000)).str();
+
+        m_print->set_status(15, message);
+    }
+
+    wall_job.get();
     m_print->throw_if_canceled();
     BOOST_LOG_TRIVIAL(debug) << "Generating perimeters in parallel - end";
 
     if (recover_islands) {
-        bool changed = false;
-        // Perimeters read neighbouring layers. Finish every reader before changing
-        // material ownership, and finish every change before generating paths again.
-        for (Layer *layer : m_layers) {
-            m_print->throw_if_canceled();
-            changed = layer->reassign_unprinted_islands() || changed;
-        }
-        if (changed)
-            tbb::parallel_for(tbb::blocked_range<size_t>(0, m_layers.size()),
-                [this](const tbb::blocked_range<size_t> &range) {
+        m_print->set_status(15, L("Checking unprintable material islands"));
+
+        std::vector<unsigned char> dirty(total_layers, false);
+        std::vector<unsigned char> changed_layers(total_layers, false);
+        std::atomic<size_t> checked_layers{0};
+
+        m_print->set_status(15, (boost::format(L("Checking material islands: 0/%1% layers")) % total_layers).str());
+
+        std::vector<std::atomic<int>> layer_state(total_layers);
+        for (auto &state : layer_state)
+            state.store(0);
+        auto check_job = std::async(std::launch::async, [&, this] {
+            tbb::parallel_for(tbb::blocked_range<size_t>(0, total_layers),
+                [&, this](const tbb::blocked_range<size_t> &range) {
                     for (size_t i = range.begin(); i < range.end(); ++i) {
                         m_print->throw_if_canceled();
-                        m_layers[i]->make_perimeters();
+                        layer_state[i].store(1);
+                        changed_layers[i] = m_layers[i]->reassign_unprinted_islands();
+                        layer_state[i].store(2);
+                        ++checked_layers;
                     }
                 });
+        });
+
+        while (check_job.wait_for(std::chrono::milliseconds(500)) != std::future_status::ready) {
+            const size_t completed = checked_layers.load();
+            std::string message = (boost::format(L("Checking material islands: %1%/%2% layers"))
+                % completed % total_layers).str();
+
+            if (total_layers - completed <= 8) {
+                std::string unfinished;
+                for (size_t i = 0; i < total_layers; ++i) {
+                    if (layer_state[i].load() != 2) {
+                        if (!unfinished.empty())
+                            unfinished += ", ";
+                        unfinished += std::to_string(i + 1);
+                    }
+                }
+                message += " | Unfinished layers: " + unfinished;
+            }
+
+            m_print->set_status(15, message);
+        }
+
+        check_job.get();
+        m_print->set_status(15, (boost::format(L("Checking material islands: %1%/%2% layers"))
+            % total_layers % total_layers).str());
+
+        for (size_t i = 0; i < total_layers; ++i)
+            if (changed_layers[i])
+                for (size_t j = (i == 0 ? 0 : i - 1); j < std::min(total_layers, i + 2); ++j)
+                    dirty[j] = true;
+
+        std::vector<size_t> regenerate;
+        for (size_t i = 0; i < total_layers; ++i)
+            if (dirty[i])
+                regenerate.push_back(i);
+
+        if (!regenerate.empty()) {
+            std::atomic<size_t> rebuilt{0};
+            const auto regen_started = std::chrono::steady_clock::now();
+
+            auto regen_job = std::async(std::launch::async, [&, this] {
+                tbb::parallel_for(tbb::blocked_range<size_t>(0, regenerate.size()),
+                    [&, this](const tbb::blocked_range<size_t> &range) {
+                        for (size_t k = range.begin(); k < range.end(); ++k) {
+                            m_print->throw_if_canceled();
+                            m_layers[regenerate[k]]->make_perimeters();
+                            ++rebuilt;
+                        }
+                    });
+            });
+
+            while (regen_job.wait_for(std::chrono::milliseconds(500)) != std::future_status::ready) {
+                const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::steady_clock::now() - regen_started).count();
+                m_print->set_status(15, (boost::format(L("Regenerating changed walls: %1%/%2% layers (%3% s elapsed)"))
+                    % rebuilt.load() % regenerate.size() % elapsed).str());
+            }
+            regen_job.get();
+        }
     }
 
     this->set_done(posPerimeters);
