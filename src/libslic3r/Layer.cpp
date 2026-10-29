@@ -322,180 +322,188 @@ void Layer::make_perimeters(bool collect_unprinted_islands)
 
 bool Layer::reassign_unprinted_islands()
 {
+    if (std::none_of(m_regions.begin(), m_regions.end(), [](const LayerRegion *region) {
+            return !region->unprinted_islands.empty() && region->region().config().wall_loops.value > 0 &&
+                   region->region().config().sparse_infill_density.value == 100.;
+        }))
+        return false;
+
     const auto same_area = [](const ExPolygon &a, const ExPolygon &b) {
         return get_extents(a) == get_extents(b) &&
             diff_ex(ExPolygons{a}, ExPolygons{b}).empty() &&
             diff_ex(ExPolygons{b}, ExPolygons{a}).empty();
     };
-    const auto preserve_source = [](LayerRegion &region) {
-        if (!region.slices_before_island_recovery)
-            region.slices_before_island_recovery = to_expolygons(region.slices.surfaces);
-    };
-
     using BoxKey = std::array<coord_t, 4>;
     const auto box_key = [](const BoundingBox &b) -> BoxKey {
         return {b.min.x(), b.min.y(), b.max.x(), b.max.y()};
     };
-
     struct RegionIndex {
         std::map<BoxKey, std::vector<size_t>> surfaces;
         std::map<BoxKey, std::vector<std::pair<size_t, size_t>>> holes;
         std::vector<BoundingBox> boxes;
+        std::vector<unsigned char> remove_surface;
+        std::vector<std::vector<unsigned char>> remove_hole;
+        std::vector<signed char> printable; // -1: not checked, 0: no output, 1: output.
+        Polygons coverage;
+        std::vector<BoundingBox> coverage_boxes;
+        bool coverage_ready = false;
+        bool dirty = false;
     };
-
-    std::map<LayerRegion *, RegionIndex> indexes;
-    std::map<LayerRegion *, Polygons> coverage_cache;
-    std::map<LayerRegion *, bool> raw_dirty;
-
-    // Build bounding-box indexes, rebuilding modified regions after transfers.
-    const auto rebuild_index = [&](LayerRegion *region) {
-        auto &idx = indexes[region];
-        idx = RegionIndex{};
-
-        const auto &surfaces = region->slices.surfaces;
+    std::vector<RegionIndex> indexes(m_regions.size());
+    // Match against the original partition and defer edits until all decisions
+    // are made. Erasing a hole must not rebuild every index on a complex layer.
+    for (size_t r = 0; r < m_regions.size(); ++r) {
+        if (m_object != nullptr && m_object->print()->canceled())
+            throw CanceledException();
+        const auto &surfaces = m_regions[r]->slices.surfaces;
+        auto &idx = indexes[r];
         idx.boxes.reserve(surfaces.size());
-
+        idx.remove_surface.resize(surfaces.size(), false);
+        idx.remove_hole.resize(surfaces.size());
+        idx.printable.resize(surfaces.size(), -1);
         for (size_t i = 0; i < surfaces.size(); ++i) {
             const auto &expolygon = surfaces[i].expolygon;
             idx.boxes.push_back(get_extents(expolygon));
             idx.surfaces[box_key(idx.boxes.back())].push_back(i);
-
+            idx.remove_hole[i].resize(expolygon.holes.size(), false);
             for (size_t h = 0; h < expolygon.holes.size(); ++h)
                 idx.holes[box_key(get_extents(expolygon.holes[h]))].emplace_back(i, h);
         }
-    };
-
-    for (LayerRegion *region : m_regions)
-        rebuild_index(region);
+    }
 
     bool changed = false;
-
-    for (LayerRegion *source : m_regions) {
+    for (size_t source_id = 0; source_id < m_regions.size(); ++source_id) {
+        const LayerRegion *source = m_regions[source_id];
         if (source->region().config().wall_loops.value == 0 ||
             source->region().config().sparse_infill_density.value != 100.)
             continue;
-
+        const auto &surfaces = source->slices.surfaces;
+        auto &source_idx = indexes[source_id];
         for (const ExPolygon &island : source->unprinted_islands) {
-            if (this->object()->print()->canceled())
+            if (m_object != nullptr && m_object->print()->canceled())
                 throw CanceledException();
-
             if (!island.holes.empty())
                 continue;
-
             const auto bbox = get_extents(island);
             const auto key = box_key(bbox);
+            auto originals = source_idx.surfaces.find(key);
+            if (originals == source_idx.surfaces.end())
+                continue;
+            size_t original = surfaces.size();
+            for (size_t si : originals->second)
+                if (!source_idx.remove_surface[si] && same_area(surfaces[si].expolygon, island)) {
+                    original = si;
+                    break;
+                }
+            if (original == surfaces.size())
+                continue;
 
-            LayerRegion *recipient = nullptr;
-            size_t surface_idx = 0, hole_idx = 0;
+            size_t recipient = m_regions.size(), surface_idx = 0, hole_idx = 0;
             bool ambiguous = false;
-
-            // Only inspect holes with exactly the same bounding box.
-            for (LayerRegion *other : m_regions) {
-                if (other == source)
+            for (size_t r = 0; r < m_regions.size() && !ambiguous; ++r) {
+                if (r == source_id)
                     continue;
-
-                const auto &idx = indexes[other];
-                auto candidates = idx.holes.find(key);
-                if (candidates == idx.holes.end())
+                auto candidates = indexes[r].holes.find(key);
+                if (candidates == indexes[r].holes.end())
                     continue;
-
                 for (const auto &[si, hi] : candidates->second) {
-                    Polygon hole = other->slices.surfaces[si].expolygon.holes[hi];
+                    Polygon hole = m_regions[r]->slices.surfaces[si].expolygon.holes[hi];
                     hole.reverse();
-
                     if (!same_area(ExPolygon(std::move(hole)), island))
                         continue;
-
-                    if (recipient != nullptr) {
+                    if (recipient != m_regions.size() || indexes[r].remove_hole[si][hi]) {
                         ambiguous = true;
                         break;
                     }
-
-                    recipient = other;
+                    recipient = r;
                     surface_idx = si;
                     hole_idx = hi;
                 }
-                if (ambiguous)
-                    break;
             }
-
-            if (ambiguous || recipient == nullptr ||
-                recipient->region().config().sparse_infill_density.value != 100.)
+            if (ambiguous || recipient == m_regions.size() ||
+                m_regions[recipient]->region().config().sparse_infill_density.value != 100.)
                 continue;
 
-            // Find the whole source surface using the same bounding-box index.
-            auto &surfaces = source->slices.surfaces;
-            const auto &source_idx = indexes[source];
-            auto candidates = source_idx.surfaces.find(key);
-            if (candidates == source_idx.surfaces.end())
-                continue;
-
-            size_t original_idx = surfaces.size();
-            for (size_t si : candidates->second) {
-                if (same_area(surfaces[si].expolygon, island)) {
-                    original_idx = si;
-                    break;
-                }
-            }
-            if (original_idx == surfaces.size())
-                continue;
-
-            // Reject overlapping material, checking only spatially relevant surfaces.
-            for (LayerRegion *other : m_regions) {
-                if (other == source)
+            // The exact matching hole proves that the surrounding surface does
+            // not overlap the island. Still check every other relevant surface,
+            // including other surfaces of the receiving material.
+            for (size_t r = 0; r < m_regions.size() && !ambiguous; ++r) {
+                if (r == source_id)
                     continue;
-
+                if (m_object != nullptr && m_object->print()->canceled())
+                    throw CanceledException();
                 ExPolygons nearby;
-                const auto &idx = indexes[other];
-                const auto &other_surfaces = other->slices.surfaces;
-
-                for (size_t si = 0; si < other_surfaces.size(); ++si)
-                    if (bbox.overlap(idx.boxes[si]))
-                        nearby.push_back(other_surfaces[si].expolygon);
-
-                if (!nearby.empty() &&
-                    !intersection_ex(ExPolygons{island}, nearby).empty()) {
-                    ambiguous = true;
-                    break;
-                }
+                const auto &idx = indexes[r];
+                const auto &other = m_regions[r]->slices.surfaces;
+                for (size_t si = 0; si < other.size(); ++si)
+                    if (!(r == recipient && si == surface_idx) && bbox.overlap(idx.boxes[si]))
+                        nearby.push_back(other[si].expolygon);
+                ambiguous = !nearby.empty() && !intersection_ex(ExPolygons{island}, nearby).empty();
             }
             if (ambiguous)
                 continue;
 
-            // The surrounding component must have printable output.
-            auto [it, inserted] = coverage_cache.try_emplace(recipient);
-            if (inserted) {
-                it->second = recipient->perimeters.polygons_covered_by_width();
-                recipient->thin_fills.polygons_covered_by_width(it->second, 0.f);
-                polygons_append(it->second, to_polygons(recipient->fill_surfaces.surfaces));
+            auto &target = indexes[recipient];
+            if (target.printable[surface_idx] < 0) {
+                if (!target.coverage_ready) {
+                    const LayerRegion *region = m_regions[recipient];
+                    target.coverage = region->perimeters.polygons_covered_by_width();
+                    region->thin_fills.polygons_covered_by_width(target.coverage, 0.f);
+                    polygons_append(target.coverage, to_polygons(region->fill_surfaces.surfaces));
+                    target.coverage_boxes.reserve(target.coverage.size());
+                    for (const Polygon &polygon : target.coverage)
+                        target.coverage_boxes.push_back(get_extents(polygon));
+                    target.coverage_ready = true;
+                }
+                // Disconnected components need only the coverage polygons whose
+                // bounds overlap them, not every extrusion on the whole layer.
+                Polygons nearby_coverage;
+                for (size_t p = 0; p < target.coverage.size(); ++p)
+                    if (target.boxes[surface_idx].overlap(target.coverage_boxes[p]))
+                        nearby_coverage.push_back(target.coverage[p]);
+                target.printable[surface_idx] = !intersection_ex(
+                    ExPolygons{m_regions[recipient]->slices.surfaces[surface_idx].expolygon}, nearby_coverage).empty();
             }
-
-            auto &surrounding = recipient->slices.surfaces[surface_idx];
-            if (intersection_ex(ExPolygons{surrounding.expolygon}, it->second).empty())
+            if (!target.printable[surface_idx])
                 continue;
-
-            preserve_source(*source);
-            preserve_source(*recipient);
-
-            surrounding.expolygon.holes.erase(
-                surrounding.expolygon.holes.begin() + hole_idx);
-            surfaces.erase(surfaces.begin() + original_idx);
-
-            raw_dirty[source] = true;
-            raw_dirty[recipient] = true;
-            changed = true;
-
-            // Surface/hole indices may have shifted after erasing.
-            rebuild_index(source);
-            rebuild_index(recipient);
+            source_idx.remove_surface[original] = true;
+            target.remove_hole[surface_idx][hole_idx] = true;
+            source_idx.dirty = target.dirty = changed = true;
         }
     }
 
-    // Rebuild raw slices once per modified region, not once per island.
-    for (const auto &[region, dirty] : raw_dirty)
-        if (dirty)
-            region->raw_slices = to_expolygons(region->slices.surfaces);
-
+    // Compact once per region, preserving both the material union and the
+    // original ownership used when print settings change. No polygon offsets.
+    for (size_t r = 0; r < m_regions.size(); ++r) {
+        const auto &idx = indexes[r];
+        if (!idx.dirty)
+            continue;
+        if (m_object != nullptr && m_object->print()->canceled())
+            throw CanceledException();
+        LayerRegion *region = m_regions[r];
+        if (!region->slices_before_island_recovery)
+            region->slices_before_island_recovery = to_expolygons(region->slices.surfaces);
+        auto &surfaces = region->slices.surfaces;
+        size_t keep = 0;
+        for (size_t i = 0; i < surfaces.size(); ++i) {
+            if (idx.remove_surface[i])
+                continue;
+            auto &holes = surfaces[i].expolygon.holes;
+            size_t keep_hole = 0;
+            for (size_t h = 0; h < holes.size(); ++h)
+                if (!idx.remove_hole[i][h]) {
+                    if (keep_hole != h)
+                        holes[keep_hole] = std::move(holes[h]);
+                    ++keep_hole;
+                }
+            holes.resize(keep_hole);
+            if (keep != i)
+                surfaces[keep] = std::move(surfaces[i]);
+            ++keep;
+        }
+        surfaces.resize(keep);
+        region->raw_slices = to_expolygons(surfaces);
+    }
     return changed;
 }
 
