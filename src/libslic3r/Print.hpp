@@ -520,6 +520,9 @@ public:
 
     // Called by make_perimeters()
     void slice();
+    // Apply native XY and elephant-foot compensation to freshly supplied region slices.
+    // Not idempotent: callers must replace the slices before calling again.
+    void apply_slice_compensation();
 
     // Helpers to slice support enforcer / blocker meshes by the support generator.
     std::vector<Polygons>       slice_support_volumes(const ModelVolumeType model_volume_type) const;
