@@ -6,6 +6,7 @@ target_sources(libslic3r_cgal PRIVATE texture_import_cgal.cpp)
 
 add_executable(${_TEST_NAME}_tests
     ${_TEST_NAME}_tests.cpp
+    test_voxel_compensation.cpp
     test_3mf.cpp
     test_amf.cpp
     # Round-trip seam metadata and active/dormant volume settings in both formats.

@@ -452,3 +452,16 @@ TEST_CASE("Duplicate discarded reports transfer an island only once", "[Unprinte
     CHECK(f.b->slices.empty());
     CHECK(same_area(f.a->raw_slices, f.solid));
 }
+
+TEST_CASE("Overlapping source surfaces cannot create overlapping material after recovery", "[UnprintedIslands]")
+{
+    IslandFixture f(0.04);
+    f.b->slices.append(ExPolygons{ExPolygon(square(5., 5., 0.02))}, stInternal);
+    f.b->unprinted_islands = f.b->raw_slices;
+    f.a->fill_surfaces = f.a->slices;
+    const ExPolygons before_a = to_expolygons(f.a->slices.surfaces);
+    const ExPolygons before_b = to_expolygons(f.b->slices.surfaces);
+    REQUIRE_FALSE(f.layer.reassign_unprinted_islands());
+    CHECK(same_area(to_expolygons(f.a->slices.surfaces), before_a));
+    CHECK(same_area(to_expolygons(f.b->slices.surfaces), before_b));
+}

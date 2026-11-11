@@ -426,17 +426,16 @@ bool Layer::reassign_unprinted_islands()
 
             // The exact matching hole proves that the surrounding surface does
             // not overlap the island. Still check every other relevant surface,
-            // including other surfaces of the receiving material.
+            // including other surfaces of the source and receiving materials.
             for (size_t r = 0; r < m_regions.size() && !ambiguous; ++r) {
-                if (r == source_id)
-                    continue;
                 if (m_object != nullptr && m_object->print()->canceled())
                     throw CanceledException();
                 ExPolygons nearby;
                 const auto &idx = indexes[r];
                 const auto &other = m_regions[r]->slices.surfaces;
                 for (size_t si = 0; si < other.size(); ++si)
-                    if (!(r == recipient && si == surface_idx) && bbox.overlap(idx.boxes[si]))
+                    if (!(r == source_id && si == original) &&
+                        !(r == recipient && si == surface_idx) && bbox.overlap(idx.boxes[si]))
                         nearby.push_back(other[si].expolygon);
                 ambiguous = !nearby.empty() && !intersection_ex(ExPolygons{island}, nearby).empty();
             }
