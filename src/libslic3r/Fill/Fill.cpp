@@ -1049,9 +1049,15 @@ std::vector<SurfaceFill> group_fills(const Layer &layer, LockRegionParam &lock_p
                         params.angle = Geometry::deg2rad(top_layer_direction_set ? region_config.top_layer_direction.value : region_config.bottom_layer_direction.value);
                         params.fixed_angle = true;
                     } else {
-                        params.angle = calculate_infill_rotation_angle(layer.object(), layer.id(), region_config.solid_infill_direction.value,
-                                                                       region_config.solid_infill_rotate_template.value);
-                        params.fixed_angle = !region_config.solid_infill_rotate_template.value.empty();
+                        if (params.pattern == ipGoldenAngle) {
+                            // The selected pattern supplies its own layer rotation sequence.
+                            params.angle = Geometry::deg2rad(region_config.solid_infill_direction.value);
+                            params.fixed_angle = true;
+                        } else {
+                            params.angle = calculate_infill_rotation_angle(layer.object(), layer.id(), region_config.solid_infill_direction.value,
+                                                                           region_config.solid_infill_rotate_template.value);
+                            params.fixed_angle = !region_config.solid_infill_rotate_template.value.empty();
+                        }
                     }
                 }
                 params.bridge_angle = float(surface.bridge_angle);
