@@ -311,6 +311,7 @@ static t_config_enum_values s_keys_map_InfillPattern {
     { "monotonic", ipMonotonic },
     { "monotonicline", ipMonotonicLine },
     { "rectilinear", ipRectilinear },
+    { "goldenangle", ipGoldenAngle },
     { "alignedrectilinear", ipAlignedRectilinear },
     { "zigzag", ipZigZag },
     { "crosszag", ipCrossZag },
@@ -2685,6 +2686,8 @@ void PrintConfigDef::init_fff_params()
     def->enum_keys_map = &ConfigOptionEnum<InfillPattern>::get_enum_values();
     def->enum_values   = def_top_fill_pattern->enum_values;
     def->enum_labels   = def_top_fill_pattern->enum_labels;
+    def->enum_values.push_back("goldenangle");
+    def->enum_labels.push_back(L("Golden-angle"));
     def->set_default_value(new ConfigOptionEnum<InfillPattern>(ipMonotonic));
     
     def = this->add("outer_wall_line_width", coFloatOrPercent);

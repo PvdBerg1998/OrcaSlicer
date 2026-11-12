@@ -44,6 +44,14 @@ protected:
     bool fill_surface_trapezoidal(const Surface *surface, FillParams params, Polylines &polylines_out, int Pattern_type);
 };
 
+// Solid rectilinear fill with a golden-angle rotation and a repeatable grid phase.
+class FillGoldenAngle : public FillRectilinear
+{
+public:
+    Fill* clone() const override { return new FillGoldenAngle(*this); }
+    Polylines fill_surface(const Surface *surface, const FillParams &params) override;
+};
+
 class FillAlignedRectilinear : public FillRectilinear
 {
 public:

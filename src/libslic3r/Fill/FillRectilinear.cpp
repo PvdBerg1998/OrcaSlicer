@@ -3583,6 +3583,35 @@ Polylines FillRectilinear::fill_surface(const Surface *surface, const FillParams
     return polylines_out;
 }
 
+Polylines FillGoldenAngle::fill_surface(const Surface *surface, const FillParams &params)
+{
+    // Bridges keep their native direction and spacing behavior.
+    if (surface->is_bridge() || surface->bridge_angle >= 0.)
+        return FillRectilinear::fill_surface(surface, params);
+
+    const size_t index = layer_id == size_t(-1) ? 0 : layer_id;
+    // Lines are undirected: the golden fraction of 180 degrees, not 360.
+    const double increment = M_PI * (3. - std::sqrt(5.)) / 2.;
+    FillGoldenAngle fill(*this);
+    fill.angle = float(std::fmod(double(angle) + double(index) * increment, M_PI));
+    fill.fixed_angle = true;
+
+    // SplitMix64 gives a platform-independent phase without shared random state.
+    uint64_t seed = uint64_t(index) + UINT64_C(0x9e3779b97f4a7c15);
+    seed = (seed ^ (seed >> 30)) * UINT64_C(0xbf58476d1ce4e5b9);
+    seed = (seed ^ (seed >> 27)) * UINT64_C(0x94d049bb133111eb);
+    seed ^= seed >> 31;
+    const double phase = double(seed >> 11) * (1. / 9007199254740992.);
+    FillParams shifted = params;
+    // Solid spacing adjustment anchors lines to each island's bounds and ignores
+    // pattern_shift. Keep nominal spacing and use the common object grid instead.
+    shifted.dont_adjust = true;
+    Polylines result;
+    if (!fill.fill_surface_by_lines(surface, shifted, 0.f, float(phase * spacing), result))
+        BOOST_LOG_TRIVIAL(error) << "FillGoldenAngle failed to fill a region.";
+    return result;
+}
+
 Polylines FillMonotonic::fill_surface(const Surface *surface, const FillParams &params)
 {
     FillParams params2 = params;
