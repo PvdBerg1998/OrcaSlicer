@@ -312,6 +312,7 @@ static t_config_enum_values s_keys_map_InfillPattern {
     { "monotonicline", ipMonotonicLine },
     { "rectilinear", ipRectilinear },
     { "goldenangle", ipGoldenAngle },
+    { "shiftingrectilinear", ipShiftingRectilinear },
     { "alignedrectilinear", ipAlignedRectilinear },
     { "zigzag", ipZigZag },
     { "crosszag", ipCrossZag },
@@ -2688,8 +2689,32 @@ void PrintConfigDef::init_fff_params()
     def->enum_labels   = def_top_fill_pattern->enum_labels;
     def->enum_values.push_back("goldenangle");
     def->enum_labels.push_back(L("Golden-angle"));
+    def->enum_values.push_back("shiftingrectilinear");
+    def->enum_labels.push_back(L("Shifting Rectilinear"));
     def->set_default_value(new ConfigOptionEnum<InfillPattern>(ipMonotonic));
     
+    def = this->add("shifting_rectilinear_phases", coInt);
+    def->label = L("Number of phases");
+    def->category = L("Strength");
+    def->tooltip = L("Number of evenly spaced line positions within one line spacing for Shifting Rectilinear. "
+                     "Each position is used by a pair of perpendicular layers. For 10 phases, the offsets are "
+                     "0, 0.1, ..., 0.9 times the line spacing. Uses the solid infill direction as its base angle "
+                     "and ignores the solid infill rotation template. Separate top, bottom and bridge patterns are unchanged.");
+    def->min = 1;
+    def->max = 1000;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionInt(10));
+
+    def = this->add("shifting_rectilinear_zigzag", coBool);
+    def->label = L("Phase zigzag");
+    def->category = L("Strength");
+    def->tooltip = L("Reverse the phase order after each complete sweep instead of restarting at zero. "
+                     "For 4 phases: 0, 0.25, 0.5, 0.75, 0.75, 0.5, 0.25, 0, then repeat. "
+                     "Each value is used by two perpendicular layers. Endpoints occur in both sweeps "
+                     "so every phase has equal weight. Disabled: repeat the ascending sweep.");
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionBool(false));
+
     def = this->add("outer_wall_line_width", coFloatOrPercent);
     def->label = L("Outer wall");
     def->category = L("Quality");

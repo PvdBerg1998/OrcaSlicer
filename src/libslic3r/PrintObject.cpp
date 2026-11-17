@@ -1849,6 +1849,8 @@ bool PrintObject::invalidate_state_by_config_options(
                    || opt_key == "sparse_infill_smooth_factor"
                    || opt_key == "symmetric_infill_y_axis"
                    || opt_key == "infill_shift_step"
+                   || opt_key == "shifting_rectilinear_phases"
+                   || opt_key == "shifting_rectilinear_zigzag"
                    || opt_key == "sparse_infill_rotate_template"
                    || opt_key == "solid_infill_rotate_template"
                    || opt_key == "lightning_overhang_angle"

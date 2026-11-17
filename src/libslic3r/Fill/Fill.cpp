@@ -312,6 +312,8 @@ struct SurfaceFillParams
 
     // For Gyroid: when true, use the parameterized "optimized" wave.
     bool gyroid_optimized = false;
+    int shifting_rectilinear_phases = 10;
+    bool shifting_rectilinear_zigzag = false;
 
     // For TPMS: grade the density from the surface to the interior of the object.
     AdaptiveInfillMode     adaptive_infill_mode          = AdaptiveInfillMode::Disabled;
@@ -360,6 +362,8 @@ struct SurfaceFillParams
 		RETURN_COMPARE_NON_EQUAL(skin_infill_depth);
         RETURN_COMPARE_NON_EQUAL(infill_overhang_angle);
 		RETURN_COMPARE_NON_EQUAL(gyroid_optimized);
+        RETURN_COMPARE_NON_EQUAL(shifting_rectilinear_phases);
+        RETURN_COMPARE_NON_EQUAL(shifting_rectilinear_zigzag);
 		RETURN_COMPARE_NON_EQUAL(adaptive_infill_mode);
 		RETURN_COMPARE_NON_EQUAL(adaptive_infill_interior_density);
 		RETURN_COMPARE_NON_EQUAL(adaptive_infill_gradient);
@@ -396,6 +400,8 @@ struct SurfaceFillParams
                 this->center_of_surface_pattern == rhs.center_of_surface_pattern &&
                 this->separated_infills       == rhs.separated_infills &&
                 this->gyroid_optimized        == rhs.gyroid_optimized        &&
+                this->shifting_rectilinear_phases == rhs.shifting_rectilinear_phases &&
+                this->shifting_rectilinear_zigzag == rhs.shifting_rectilinear_zigzag &&
                 this->adaptive_infill_mode           == rhs.adaptive_infill_mode           &&
                 this->adaptive_infill_interior_density   == rhs.adaptive_infill_interior_density   &&
                 this->adaptive_infill_gradient  == rhs.adaptive_infill_gradient  &&
@@ -1033,6 +1039,10 @@ std::vector<SurfaceFill> group_fills(const Layer &layer, LockRegionParam &lock_p
                 // Stored on SurfaceFillParams; copied to FillParams during conversion.
                 params.gyroid_optimized = (params.pattern == ipGyroid) && region_config.gyroid_optimized && !adaptive_infill_mode;
 
+                // Keep modifier regions with different phase schedules in separate fill groups.
+                const bool shifting = params.pattern == ipShiftingRectilinear;
+                params.shifting_rectilinear_phases = shifting ? region_config.shifting_rectilinear_phases.value : 10;
+                params.shifting_rectilinear_zigzag = shifting && region_config.shifting_rectilinear_zigzag.value;
                 if (params.extrusion_role == erInternalInfill) {
                     params.angle = calculate_infill_rotation_angle(layer.object(), layer.id(), region_config.infill_direction.value,
                                                                    region_config.sparse_infill_rotate_template.value);
@@ -1049,7 +1059,7 @@ std::vector<SurfaceFill> group_fills(const Layer &layer, LockRegionParam &lock_p
                         params.angle = Geometry::deg2rad(top_layer_direction_set ? region_config.top_layer_direction.value : region_config.bottom_layer_direction.value);
                         params.fixed_angle = true;
                     } else {
-                        if (params.pattern == ipGoldenAngle) {
+                        if (params.pattern == ipGoldenAngle || params.pattern == ipShiftingRectilinear) {
                             // The selected pattern supplies its own layer rotation sequence.
                             params.angle = Geometry::deg2rad(region_config.solid_infill_direction.value);
                             params.fixed_angle = true;
@@ -1440,6 +1450,8 @@ void Layer::make_fills(const FillAdaptive::RegionOctrees* fill_octrees, FillLigh
         params.lateral_lattice_angle_2   = surface_fill.params.lateral_lattice_angle_2;
         params.infill_overhang_angle   = surface_fill.params.infill_overhang_angle;
         params.gyroid_optimized          = surface_fill.params.gyroid_optimized;
+        params.shifting_rectilinear_phases = surface_fill.params.shifting_rectilinear_phases;
+        params.shifting_rectilinear_zigzag = surface_fill.params.shifting_rectilinear_zigzag;
         params.adaptive_infill_mode             = surface_fill.params.adaptive_infill_mode;
         params.adaptive_infill_interior_density     = float(0.01 * surface_fill.params.adaptive_infill_interior_density);
         params.adaptive_infill_gradient    = surface_fill.params.adaptive_infill_gradient;
@@ -1663,6 +1675,8 @@ Polylines Layer::generate_sparse_infill_polylines_for_anchoring(const FillAdapti
         params.infill_overhang_angle   = surface_fill.params.infill_overhang_angle;
         params.multiline         = surface_fill.params.multiline;
         params.gyroid_optimized          = surface_fill.params.gyroid_optimized;
+        params.shifting_rectilinear_phases = surface_fill.params.shifting_rectilinear_phases;
+        params.shifting_rectilinear_zigzag = surface_fill.params.shifting_rectilinear_zigzag;
         params.adaptive_infill_mode             = surface_fill.params.adaptive_infill_mode;
         params.adaptive_infill_interior_density     = float(0.01 * surface_fill.params.adaptive_infill_interior_density);
         params.adaptive_infill_gradient    = surface_fill.params.adaptive_infill_gradient;

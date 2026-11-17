@@ -75,6 +75,7 @@ Fill* Fill::new_from_type(const InfillPattern type)
     case ipTpmsFK:              return new FillTpmsFK();
     case ipRectilinear:         return new FillRectilinear();
     case ipGoldenAngle:         return new FillGoldenAngle();
+    case ipShiftingRectilinear: return new FillShiftingRectilinear();
     case ipAlignedRectilinear:  return new FillAlignedRectilinear();
     case ipCrossHatch:          return new FillCrossHatch();
     case ipMonotonic:           return new FillMonotonic();
