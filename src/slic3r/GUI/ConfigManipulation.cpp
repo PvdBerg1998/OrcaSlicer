@@ -874,6 +874,11 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, in
         toggle_field("infill_anchor", has_infill_anchors, -1, _L("Select an infill pattern other than Line and set the maximum infill anchor length above zero."));
     }
 
+    const bool is_shifting_rectilinear =
+        config->option<ConfigOptionEnum<InfillPattern>>("internal_solid_infill_pattern")->value == ipShiftingRectilinear;
+    for (const auto *key : {"shifting_rectilinear_phases", "shifting_rectilinear_zigzag"})
+        toggle_line(key, is_shifting_rectilinear, -1, _L("Select Shifting Rectilinear internal solid infill to use this setting."));
+
     //cross zag
     bool is_cross_zag = config->option<ConfigOptionEnum<InfillPattern>>("sparse_infill_pattern")->value == InfillPattern::ipCrossZag;
     bool is_locked_zig = config->option<ConfigOptionEnum<InfillPattern>>("sparse_infill_pattern")->value == InfillPattern::ipLockedZag;
@@ -1363,7 +1368,7 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, in
     //Orca: disable infill_direction/solid_infill_direction if sparse_infill_rotate_template/solid_infill_rotate_template is not empty value and adaptive cubic/support cubic infill pattern is not selected
     toggle_field("sparse_infill_rotate_template", !FillAdaptive, -1, _L("Infill rotation templates are unavailable for Adaptive Cubic and Support Cubic infill."));
     toggle_field("infill_direction", config->opt_string("sparse_infill_rotate_template") == "" && !FillAdaptive, -1, _L("Clear the sparse infill rotation template and choose a pattern other than Adaptive Cubic or Support Cubic to edit infill direction."));
-    toggle_field("solid_infill_direction", config->opt_string("solid_infill_rotate_template") == "", -1, _L("Clear the solid infill rotation template to edit solid infill direction."));
+    toggle_field("solid_infill_direction", is_shifting_rectilinear || config->opt_string("solid_infill_rotate_template") == "", -1, _L("Clear the solid infill rotation template to edit solid infill direction."));
     
     toggle_line("infill_overhang_angle", config->opt_enum<InfillPattern>("sparse_infill_pattern") == InfillPattern::ipLateralHoneycomb, -1, _L("Select the Lateral Honeycomb sparse infill pattern to use this setting."));
 

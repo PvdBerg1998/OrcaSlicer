@@ -92,6 +92,8 @@ struct FillParams
 
     // For Gyroid: when true, use the parameterized "optimized" variant.
     bool        gyroid_optimized { false };
+    int         shifting_rectilinear_phases { 10 };
+    bool        shifting_rectilinear_zigzag { false };
 
     // For TPMS: grade the density from the surface to the interior of the object. Density fraction.
     AdaptiveInfillMode     adaptive_infill_mode { AdaptiveInfillMode::Disabled };

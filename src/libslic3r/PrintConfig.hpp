@@ -135,6 +135,7 @@ enum InfillPattern : int {
     ipConcentric, ipSpiralInset, ipHilbertCurve, ipArchimedeanChords, ipOctagramSpiral,
     ipSupportBase, ipConcentricInternal,
     ipGoldenAngle,
+    ipShiftingRectilinear,
     ipCount,
 };
 
@@ -1485,6 +1486,8 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionBool,                 symmetric_infill_y_axis))
     ((ConfigOptionBool,                 infill_complete_top))
     ((ConfigOptionFloat,                infill_shift_step))
+    ((ConfigOptionInt,                  shifting_rectilinear_phases))
+    ((ConfigOptionBool,                 shifting_rectilinear_zigzag))
     ((ConfigOptionString,               sparse_infill_rotate_template))
     ((ConfigOptionPercent,              sparse_infill_density))
     ((ConfigOptionEnum<InfillPattern>,  sparse_infill_pattern))

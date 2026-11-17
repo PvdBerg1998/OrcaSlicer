@@ -52,6 +52,13 @@ public:
     Polylines fill_surface(const Surface *surface, const FillParams &params) override;
 };
 
+class FillShiftingRectilinear : public FillRectilinear
+{
+public:
+    Fill* clone() const override { return new FillShiftingRectilinear(*this); }
+    Polylines fill_surface(const Surface *surface, const FillParams &params) override;
+};
+
 class FillAlignedRectilinear : public FillRectilinear
 {
 public:

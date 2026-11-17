@@ -3533,6 +3533,32 @@ Polylines FillGoldenAngle::fill_surface(const Surface *surface, const FillParams
     return result;
 }
 
+Polylines FillShiftingRectilinear::fill_surface(const Surface *surface, const FillParams &params)
+{
+    if (surface->is_bridge() || surface->bridge_angle >= 0.)
+        return FillRectilinear::fill_surface(surface, params);
+
+    const size_t index = layer_id == size_t(-1) ? 0 : layer_id;
+    const size_t count = size_t(std::clamp(params.shifting_rectilinear_phases, 1, 1000));
+    // Advance only after both perpendicular orientations have used the phase.
+    const size_t pair = index / 2;
+    size_t slot = pair % count;
+    if (params.shifting_rectilinear_zigzag && (pair / count) % 2 != 0)
+        slot = count - 1 - slot;
+    const double phase = double(slot) / double(count);
+
+    FillShiftingRectilinear fill(*this);
+    fill.angle = float(std::fmod(double(angle) + double(index % 2) * M_PI / 2., M_PI));
+    fill.fixed_angle = true;
+    FillParams shifted = params;
+    // Preserve nominal spacing and translate the grid before clipping to the surface.
+    shifted.dont_adjust = true;
+    Polylines result;
+    if (!fill.fill_surface_by_lines(surface, shifted, 0.f, float(phase * spacing), result))
+        BOOST_LOG_TRIVIAL(error) << "FillShiftingRectilinear failed to fill a region.";
+    return result;
+}
+
 Polylines FillMonotonic::fill_surface(const Surface *surface, const FillParams &params)
 {
     FillParams params2 = params;
