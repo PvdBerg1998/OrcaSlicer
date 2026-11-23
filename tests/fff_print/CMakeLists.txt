@@ -4,7 +4,9 @@ add_executable(${_TEST_NAME}_tests
 	test_helpers.cpp
 	test_helpers.hpp
 	test_adaptive_pressure_advance.cpp
+	test_bridge.cpp
 	test_calib.cpp
+	test_conflict_checker.cpp
 	test_cooling.cpp
 	test_extrusion_entity.cpp
 	test_extrusion_processor.cpp
@@ -24,6 +26,7 @@ add_executable(${_TEST_NAME}_tests
 	test_model.cpp
 	test_multifilament.cpp
 	test_multimaterial_segmentation.cpp
+	test_painted_modifier.cpp
 	test_perimeters.cpp
 	test_unprinted_islands.cpp
 	# Seam geometry and pipeline regressions share the existing Print fixtures.

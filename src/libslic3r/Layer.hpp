@@ -209,9 +209,12 @@ public:
 
     // Whether two regions can be printed in a continues perimeter
     static bool             is_perimeter_compatible(const Print& print, const PrintRegion& a, const PrintRegion& b);
+    // Moves a strip of the regions supported next to a bridge of another region to the bridge to anchor on.
+    void                    anchor_bridges_in_neighbours();
     void                    make_perimeters(bool collect_unprinted_islands = false);
     bool                    reassign_unprinted_islands();
     void                    restore_island_ownership();
+    void                    make_perimeters();
     // Phony version of make_fills() without parameters for Perl integration only.
     void                    make_fills() { this->make_fills(nullptr); }
     void                    make_fills(const FillAdaptive::RegionOctrees* fill_octrees, FillLightning::Generator* lightning_generator = nullptr);
